@@ -36,8 +36,8 @@ public:
 
     bool checkCriticalThresholds() {
         const bool isGasAlarm = gasAlarm || (gasLevel > THRESHOLD_GAS_MAX) || (gasLevel < THRESHOLD_GAS_MIN);
-        const bool isTemperatureAlarm = !isnan(temperature) || temperature < THRESHOLD_TEMP_MIN || temperature >
-                                        THRESHOLD_TEMP_MAX;
+        const bool isTemperatureAlarm = isnan(temperature) || (temperature < THRESHOLD_TEMP_MIN) || (temperature >
+                                            THRESHOLD_TEMP_MAX);
         return isGasAlarm || isTemperatureAlarm;
     }
 };
