@@ -6,9 +6,9 @@ constexpr int PIN_DHT22 = D5;
 constexpr int PIN_PIR = D6;
 constexpr int PIN_MQ2_DO = D7;
 constexpr int PIN_MQ2_AO = A0;
-constexpr int PIN_BUZZER = D3;
-constexpr int PIN_LED_R = D4;
-constexpr int PIN_LED_V = D8;
+constexpr int PIN_BUZZER = D4;
+constexpr int PIN_LED_R = D8;
+constexpr int PIN_LED_V = D3;
 
 // --- DISPLAY ---
 constexpr uint8_t OLED_ADDRESS = 0x3C;
