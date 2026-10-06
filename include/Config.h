@@ -21,7 +21,9 @@ constexpr unsigned long PIR_WARMUP_MS = 60000;
 
 // --- THRESHOLDS ---
 constexpr float THRESHOLD_TEMP_MAX = 30.0;
+constexpr float THRESHOLD_TEMP_MIN = -10.0;
 constexpr int THRESHOLD_GAS_MAX = 400;
+constexpr int THRESHOLD_GAS_MIN = 40;
 
 // --- NETWORK & SERVER ---
 static const char *WIFI_SSID = "YOUR_SSID";
