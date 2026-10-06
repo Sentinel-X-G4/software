@@ -24,8 +24,18 @@ public:
     }
 
     void readAll() {
+        readClimate();
+        readFast();
+    }
+
+    // DHT22: at most one read every 2 s
+    void readClimate() {
         temperature = dht.readTemperature();
         humidity = dht.readHumidity();
+    }
+
+    // Gas + PIR: cheap, read before each telemetry message
+    void readFast() {
         gasLevel = analogRead(PIN_MQ2_AO);
         gasAlarm = (digitalRead(PIN_MQ2_DO) == LOW);
 

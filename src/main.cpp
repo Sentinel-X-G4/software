@@ -1,8 +1,6 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <ESP8266WiFi.h>
-#include <ESP8266HTTPClient.h>
-#include <WiFiClientSecure.h>
 #include <WebSocketsClient.h>
 
 // Import our custom modules
@@ -10,20 +8,23 @@
 #include "Actuators.h"
 #include "Sensors.h"
 #include "Display.h"
+#include "MqttClient.h"
 
 // Instantiate our objects
 Actuators myActuators;
 Sensors mySensors;
 Display myDisplay;
+MqttClient myMqtt;
 
 // Network variables
-WiFiClientSecure secureClient;
 WebSocketsClient webSocket;
 bool isWifiConnected = false;
 
 // Timing variables
 unsigned long lastReadTime = 0;
-unsigned long lastSendTime = 0;
+unsigned long lastTelemetryTime = 0;
+bool hasFreshClimate = false;
+bool isAlertSent = false;
 
 // --- Network Functions ---
 
@@ -38,28 +39,6 @@ void connectWiFi() {
         attempts++;
     }
     isWifiConnected = (WiFi.status() == WL_CONNECTED);
-}
-
-void sendDataHTTPS() {
-    JsonDocument doc;
-    doc["device_id"] = DEVICE_ID;
-    doc["temperature"] = mySensors.temperature;
-    doc["humidity"] = mySensors.humidity;
-    doc["gas_raw"] = mySensors.gasLevel;
-    doc["gas_alarm"] = mySensors.gasAlarm;
-    doc["motion"] = mySensors.motionDetected;
-
-    String jsonPayload;
-    serializeJson(doc, jsonPayload);
-
-    HTTPClient http;
-    String url = String("https://") + SERVER_HOST + ":" + SERVER_PORT_HTTPS + ENDPOINT_ALERTS;
-
-    if (http.begin(secureClient, url)) {
-        http.addHeader("Content-Type", "application/json");
-        http.POST(jsonPayload);
-        http.end();
-    }
 }
 
 void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
@@ -88,9 +67,9 @@ void setup() {
     myDisplay.showSimpleMessage("SENTINEL-X", "Booting...");
 
     connectWiFi();
-    secureClient.setFingerprint(TLS_FINGERPRINT);
-
     if (isWifiConnected) {
+        myMqtt.initialize();
+
         webSocket.begin(SERVER_HOST, WEBSOCKET_PORT, "/ws");
         webSocket.onEvent(webSocketEvent);
         webSocket.setReconnectInterval(5000);
@@ -105,21 +84,30 @@ void loop() {
         lastReadTime = currentTime;
 
         mySensors.readAll();
+        hasFreshClimate = true;
 
         bool isDanger = mySensors.checkCriticalThresholds();
         myActuators.triggerAlert(isDanger);
 
+        // Local threshold crossed: one MQTT alert per danger episode (retried until published)
+        if (!isDanger) isAlertSent = false;
+        else if (!isAlertSent) isAlertSent = myMqtt.publishAlert("local_threshold");
+
         myDisplay.showDashboard(mySensors, myActuators.isAlertActive, isWifiConnected);
     }
 
-    // 2. Send data to server (Every 5 seconds)
-    if (isWifiConnected && (currentTime - lastSendTime >= SEND_INTERVAL_MS)) {
-        lastSendTime = currentTime;
-        sendDataHTTPS();
+    // 2. Publish telemetry over MQTT (Every 200 ms; temp/hum only right after a DHT22 read)
+    if (isWifiConnected && (currentTime - lastTelemetryTime >= TELEMETRY_INTERVAL_MS)) {
+        lastTelemetryTime = currentTime;
+        mySensors.readFast();
+        if (myMqtt.publishTelemetry(mySensors, hasFreshClimate, currentTime < MQ2_WARMUP_MS)) {
+            hasFreshClimate = false;
+        }
     }
 
-    // 3. Process incoming WebSocket commands
+    // 3. Keep MQTT alive & process incoming WebSocket commands
     if (isWifiConnected) {
+        myMqtt.loop();
         webSocket.loop();
     }
 }

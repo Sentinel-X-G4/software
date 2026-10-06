@@ -15,7 +15,8 @@ constexpr uint8_t OLED_ADDRESS = 0x3C;
 
 // --- TIMING (ms) ---
 constexpr unsigned long READ_INTERVAL_MS = 2000;
-constexpr unsigned long SEND_INTERVAL_MS = 5000;
+constexpr unsigned long TELEMETRY_INTERVAL_MS = 200; // ~5 msg/s required by the detection service
+constexpr unsigned long MQTT_RECONNECT_INTERVAL_MS = 5000;
 constexpr unsigned long MQ2_WARMUP_MS = 180000;
 constexpr unsigned long PIR_WARMUP_MS = 60000;
 
@@ -30,9 +31,14 @@ static const char *WIFI_SSID = "YOUR_SSID";
 static const char *WIFI_PASSWORD = "YOUR_PASSWORD";
 
 static const char *SERVER_HOST = "192.168.1.100";
-constexpr int SERVER_PORT_HTTPS = 443;
-static const char *ENDPOINT_ALERTS = "/api/v1/alerts";
 constexpr int WEBSOCKET_PORT = 8080;
 
-static const char *TLS_FINGERPRINT = "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD";
-static const char *DEVICE_ID = "sentinel-x-01";
+// MQTTS broker (TLS checked against secrets/ca.crt, see scripts/embed_ca.py)
+static const char *MQTT_HOST = "192.168.40.1";
+constexpr uint16_t MQTT_PORT = 8883;
+static const char *MQTT_USERNAME = "sentinel_iot";
+static const char *MQTT_PASSWORD = "YOUR_MQTT_PASSWORD"; // MQTT_ESP_PASSWORD in main/.env
+constexpr size_t MQTT_PAYLOAD_MAX = 256;
+
+// Must match the broker ACL: the sentinel_iot account can only publish on sentinelx/esp01/...
+static const char *DEVICE_ID = "esp01";
