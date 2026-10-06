@@ -1,116 +1,125 @@
 #include <Arduino.h>
-#include <Wire.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
-#include <DHT.h>
 #include <ArduinoJson.h>
+#include <ESP8266WiFi.h>
+#include <ESP8266HTTPClient.h>
+#include <WiFiClientSecure.h>
+#include <WebSocketsClient.h>
 
-constexpr uint8_t PIN_SDA = D2; // GPIO4
-constexpr uint8_t PIN_SCL = D1; // GPIO5
-constexpr uint8_t PIN_DHT = D5; // GPIO14
-constexpr uint8_t PIN_PIR = D6; // GPIO12
-constexpr uint8_t PIN_MQ2_DO = D7; // GPIO13 (optionnel, via pont diviseur)
-constexpr uint8_t PIN_MQ2_AO = A0; // ADC0 (via pont diviseur 10k/20k)
+// Import our custom modules
+#include "Config.h"
+#include "Actuators.h"
+#include "Sensors.h"
+#include "Display.h"
 
-constexpr uint32_t READ_INTERVAL_MS = 2000; // DHT22 : 1 lecture max / 2 s
-constexpr uint32_t PIR_WARMUP_MS = 60000; // le PIR chauffe 30-60 s
-constexpr uint32_t MQ2_WARMUP_MS = 180000; // quelques minutes (24 h au 1er usage)
+// Instantiate our objects
+Actuators myActuators;
+Sensors mySensors;
+Display myDisplay;
 
-constexpr uint8_t OLED_ADDR = 0x3C;
-Adafruit_SSD1306 oled(128, 64, &Wire, -1);
-DHT dht(PIN_DHT, DHT22);
+// Network variables
+WiFiClientSecure secureClient;
+WebSocketsClient webSocket;
+bool isWifiConnected = false;
 
-struct Measures {
-    float temperature = NAN; // °C
-    float humidity = NAN; // % HR
-    int gasRaw = 0; // 0..1023 (valeur relative, pas des ppm)
-    bool gasAlarm = false; // DO : LOW = seuil dépassé
-    bool motion = false;
-};
+// Timing variables
+unsigned long lastReadTime = 0;
+unsigned long lastSendTime = 0;
 
-Measures m;
-uint32_t lastRead = 0;
+// --- Network Functions ---
 
-void readSensors() {
-    m.temperature = dht.readTemperature();
-    m.humidity = dht.readHumidity();
-    m.gasRaw = analogRead(PIN_MQ2_AO);
-    m.gasAlarm = (digitalRead(PIN_MQ2_DO) == LOW);
-    m.motion = (digitalRead(PIN_PIR) == HIGH);
-}
+void connectWiFi() {
+    myDisplay.showSimpleMessage("Wi-Fi", "Connecting...");
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
-void drawDisplay() {
-    oled.clearDisplay();
-    oled.setTextSize(1);
-    oled.setTextColor(SSD1306_WHITE);
-
-    oled.setCursor(0, 0);
-    if (isnan(m.temperature)) oled.print("Temp : --");
-    else oled.printf("Temp : %.1f C", m.temperature);
-
-    oled.setCursor(0, 14);
-    if (isnan(m.humidity)) oled.print("Hum  : --");
-    else oled.printf("Hum  : %.1f %%", m.humidity);
-
-    oled.setCursor(0, 28);
-    oled.printf("Gaz  : %d%s", m.gasRaw, m.gasAlarm ? " !" : "");
-
-    oled.setCursor(0, 42);
-    oled.printf("PIR  : %s", m.motion ? "MOUVEMENT" : "rien");
-
-    if (millis() < MQ2_WARMUP_MS) {
-        oled.setCursor(0, 56);
-        oled.print("(chauffe capteurs)");
+    int attempts = 0;
+    while (WiFi.status() != WL_CONNECTED && attempts < 40) {
+        delay(500);
+        attempts++;
     }
-    oled.display();
+    isWifiConnected = (WiFi.status() == WL_CONNECTED);
 }
 
-void sendPayload() {
+void sendDataHTTPS() {
     JsonDocument doc;
-    doc["uptime_s"] = millis() / 1000;
+    doc["device_id"] = DEVICE_ID;
+    doc["temperature"] = mySensors.temperature;
+    doc["humidity"] = mySensors.humidity;
+    doc["gas_raw"] = mySensors.gasLevel;
+    doc["gas_alarm"] = mySensors.gasAlarm;
+    doc["motion"] = mySensors.motionDetected;
 
-    if (isnan(m.temperature)) doc["temperature"] = nullptr;
-    else doc["temperature"] = round(m.temperature * 10) / 10.0;
-    if (isnan(m.humidity)) doc["humidity"] = nullptr;
-    else doc["humidity"] = round(m.humidity * 10) / 10.0;
+    String jsonPayload;
+    serializeJson(doc, jsonPayload);
 
-    doc["gas_raw"] = m.gasRaw;
-    doc["gas_alarm"] = m.gasAlarm;
-    doc["motion"] = m.motion;
-    doc["warmup"] = millis() < MQ2_WARMUP_MS;
+    HTTPClient http;
+    String url = String("https://") + SERVER_HOST + ":" + SERVER_PORT_HTTPS + ENDPOINT_ALERTS;
 
-    serializeJson(doc, Serial);
-    Serial.println();
+    if (http.begin(secureClient, url)) {
+        http.addHeader("Content-Type", "application/json");
+        http.POST(jsonPayload);
+        http.end();
+    }
 }
+
+void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
+    if (type == WStype_TEXT) {
+        String message = String((char *) payload);
+        JsonDocument commandDoc;
+        deserializeJson(commandDoc, message);
+
+        const char *action = commandDoc["command"];
+
+        if (strcmp(action, "buzzer_on") == 0) digitalWrite(PIN_BUZZER, HIGH);
+        else if (strcmp(action, "buzzer_off") == 0) digitalWrite(PIN_BUZZER, LOW);
+        else if (strcmp(action, "reset") == 0) myActuators.triggerAlert(false);
+    }
+}
+
+// --- Main Program ---
 
 void setup() {
     Serial.begin(115200);
-    delay(100);
-    Serial.println("\n[boot] Phase 1");
 
-    pinMode(PIN_PIR, INPUT);
-    pinMode(PIN_MQ2_DO, INPUT);
+    myActuators.initialize();
+    myDisplay.initialize();
+    mySensors.initialize();
 
-    Wire.begin(PIN_SDA, PIN_SCL);
-    if (!oled.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) {
-        Serial.println("[erreur] OLED introuvable (adresse 0x3C/0x3D ? cablage ?)");
+    myDisplay.showSimpleMessage("SENTINEL-X", "Booting...");
+
+    connectWiFi();
+    secureClient.setFingerprint(TLS_FINGERPRINT);
+
+    if (isWifiConnected) {
+        webSocket.begin(SERVER_HOST, WEBSOCKET_PORT, "/ws");
+        webSocket.onEvent(webSocketEvent);
+        webSocket.setReconnectInterval(5000);
     }
-    dht.begin();
-
-    oled.clearDisplay();
-    oled.setTextSize(1);
-    oled.setTextColor(SSD1306_WHITE);
-    oled.setCursor(0, 0);
-    oled.print("Demarrage...");
-    oled.display();
 }
 
 void loop() {
-    // millis() plutôt que delay() : le programme ne se bloque jamais
-    if (millis() - lastRead >= READ_INTERVAL_MS) {
-        lastRead = millis();
-        readSensors();
-        drawDisplay();
-        sendPayload();
+    unsigned long currentTime = millis();
+
+    // 1. Read sensors & update display (Every 2 seconds)
+    if (currentTime - lastReadTime >= READ_INTERVAL_MS) {
+        lastReadTime = currentTime;
+
+        mySensors.readAll();
+
+        bool isDanger = mySensors.checkCriticalThresholds();
+        myActuators.triggerAlert(isDanger);
+
+        myDisplay.showDashboard(mySensors, myActuators.isAlertActive, isWifiConnected);
+    }
+
+    // 2. Send data to server (Every 5 seconds)
+    if (isWifiConnected && (currentTime - lastSendTime >= SEND_INTERVAL_MS)) {
+        lastSendTime = currentTime;
+        sendDataHTTPS();
+    }
+
+    // 3. Process incoming WebSocket commands
+    if (isWifiConnected) {
+        webSocket.loop();
     }
 }
