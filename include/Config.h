@@ -20,7 +20,7 @@ constexpr unsigned long MQTT_RECONNECT_INTERVAL_MS = 5000;
 // No NTP after this delay (network without Internet): TLS checks the certificate dates against the build date
 constexpr unsigned long NTP_TIMEOUT_MS = 30000;
 constexpr unsigned long MQ2_WARMUP_MS = 180000;
-constexpr unsigned long PIR_WARMUP_MS = 5000;
+constexpr unsigned long PIR_WARMUP_MS = 60000;
 
 // --- NETWORK & SERVER ---
 static const char *WIFI_SSID = "Vicky";
