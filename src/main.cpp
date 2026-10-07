@@ -1,89 +1,86 @@
 #include <Arduino.h>
-#include <ESP8266WiFi.h>
 
 // Import our custom modules
 #include "Config.h"
 #include "Actuators.h"
 #include "Sensors.h"
 #include "Display.h"
+#include "WifiClient.h"
 #include "MqttClient.h"
 
 // Instantiate our objects
 Actuators myActuators;
 Sensors mySensors;
 Display myDisplay;
+WifiClient myWifi;
 MqttClient myMqtt;
-
-// Network variables
-bool isWifiConnected = false;
-unsigned long lastWifiAttemptTime = 0;
-int wifiAttempts = 0;
 
 // Timing variables
 unsigned long lastReadTime = 0;
 unsigned long lastTelemetryTime = 0;
 bool hasFreshClimate = false;
-bool isAlertSent = false;
 
-// --- Network Functions ---
+// --- Remote commands (sentinelx/{DEVICE_ID}/cmd, sent by backend-api) ---
+// The only way to raise an alert: no local threshold. Everything persists until "reset" or a reboot.
 
-void startWiFiAttempt() {
-    wifiAttempts++;
-    lastWifiAttemptTime = millis();
-    Serial.printf("[WIFI] attempt %d to \"%s\"\n", wifiAttempts, WIFI_SSID);
-    WiFi.disconnect();
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-}
+const char *const ALERT_STATES[] = {"off", "on"};
+const char *const BUZZER_MODES[] = {"auto", "on", "off"};                   // BuzzerMode order
+const char *const LED_MODES[] = {"auto", "red", "green", "both", "off"};    // LedMode order
+const char *const SCREEN_MODES[] = {"auto", "off", "message"};              // ScreenMode order
 
-void logWiFiFailure() {
-    // 1 = SSID not found (5 GHz only, hidden, out of range), 4/6 = wrong password or WPA3 only, 7 = still trying
-    Serial.printf("[WIFI] \"%s\" failed, status=%d. Visible 2.4 GHz networks:\n", WIFI_SSID, WiFi.status());
-    const int count = WiFi.scanNetworks();
-    for (int i = 0; i < count; i++) {
-        Serial.printf("  \"%s\" ch=%d RSSI=%d enc=%d\n", WiFi.SSID(i).c_str(), WiFi.channel(i), WiFi.RSSI(i),
-                      WiFi.encryptionType(i));
+// Index of `value` in `names`, -1 if absent
+template <size_t N>
+int findMode(const char *const (&names)[N], const char *value) {
+    for (size_t i = 0; i < N; i++) {
+        if (strcmp(names[i], value) == 0) return static_cast<int>(i);
     }
-    WiFi.scanDelete();
+    return -1;
 }
 
-// Boot: waits for the first attempt, the next ones are made by maintainWiFi()
-void connectWiFi() {
-    myDisplay.showSimpleMessage("Wi-Fi", "Connecting...");
-    WiFi.mode(WIFI_STA);
-    WiFi.setAutoReconnect(true);
-    startWiFiAttempt();
+const char *handleCommand(JsonObjectConst command, JsonObject state) {
+    const char *name = command["command"] | "";
+    const char *value = command["state"] | "";
+    const char *error = nullptr;
 
-    while (WiFi.status() != WL_CONNECTED && millis() - lastWifiAttemptTime < WIFI_RETRY_INTERVAL_MS) {
-        delay(500);
+    if (strcmp(name, "alert") == 0) {
+        const int active = findMode(ALERT_STATES, value);
+        if (active < 0) error = "state: on | off";
+        else {
+            myActuators.setAlert(active == 1);
+            lastReadTime = 0; // ALERT line redrawn on the next loop()
+        }
+    } else if (strcmp(name, "buzzer") == 0) {
+        const int mode = findMode(BUZZER_MODES, value);
+        if (mode < 0) error = "state: auto | on | off";
+        else myActuators.setBuzzer(static_cast<BuzzerMode>(mode));
+    } else if (strcmp(name, "led") == 0) {
+        const int mode = findMode(LED_MODES, value);
+        if (mode < 0) error = "state: auto | red | green | both | off";
+        else myActuators.setLed(static_cast<LedMode>(mode));
+    } else if (strcmp(name, "screen") == 0) {
+        const char *text = command["text"] | "";
+        switch (findMode(SCREEN_MODES, value)) {
+            case 0: myDisplay.setAuto(); lastReadTime = 0; break; // Dashboard redrawn on the next loop()
+            case 1: myDisplay.turnOff(); break;
+            case 2:
+                if (text[0] == '\0') error = "text required";
+                else myDisplay.showMessage(text);
+                break;
+            default: error = "state: auto | off | message";
+        }
+    } else if (strcmp(name, "reset") == 0) {
+        myActuators.reset();
+        myDisplay.setAuto();
+        lastReadTime = 0;
+    } else {
+        error = "command: alert | buzzer | led | screen | reset";
     }
-}
 
-// Called on every loop(): retries every WIFI_RETRY_INTERVAL_MS until connected, without
-// blocking the sensors and the local alarm
-void maintainWiFi() {
-    const bool connected = (WiFi.status() == WL_CONNECTED);
-    if (connected && !isWifiConnected) {
-        Serial.printf("[WIFI] connected to \"%s\", IP=%s RSSI=%d dBm\n", WIFI_SSID,
-                      WiFi.localIP().toString().c_str(), WiFi.RSSI());
-        wifiAttempts = 0;
-    } else if (!connected && isWifiConnected) {
-        Serial.println("[WIFI] connection lost");
-        lastWifiAttemptTime = millis(); // Leaves the auto-reconnect one interval before forcing a retry
-    }
-    isWifiConnected = connected;
-    if (connected || millis() - lastWifiAttemptTime < WIFI_RETRY_INTERVAL_MS) return;
-
-    logWiFiFailure();
-    startWiFiAttempt();
-}
-
-// Commands received on sentinelx/{DEVICE_ID}/cmd: returns false if unknown
-bool handleCommand(const char *command) {
-    if (strcmp(command, "buzzer_on") == 0) digitalWrite(PIN_BUZZER, HIGH);
-    else if (strcmp(command, "buzzer_off") == 0) digitalWrite(PIN_BUZZER, LOW);
-    else if (strcmp(command, "reset") == 0) myActuators.triggerAlert(false);
-    else return false;
-    return true;
+    state["alert"] = ALERT_STATES[myActuators.isAlertActive ? 1 : 0];
+    state["buzzer"] = BUZZER_MODES[static_cast<int>(myActuators.buzzerMode)];
+    state["led"] = LED_MODES[static_cast<int>(myActuators.ledMode)];
+    state["screen"] = SCREEN_MODES[static_cast<int>(myDisplay.mode)];
+    return error;
 }
 
 // --- Main Program ---
@@ -97,12 +94,13 @@ void setup() {
 
     myDisplay.showSimpleMessage("SENTINEL-X", "Booting...");
 
-    connectWiFi();
+    myDisplay.showSimpleMessage("Wi-Fi", "Connecting...");
+    myWifi.initialize();
     myMqtt.initialize(handleCommand);
 }
 
 void loop() {
-    maintainWiFi();
+    myWifi.loop();
     unsigned long currentTime = millis();
 
     // 1. Read sensors & update display (Every 2 seconds)
@@ -112,18 +110,11 @@ void loop() {
         mySensors.readAll();
         hasFreshClimate = true;
 
-        bool isDanger = mySensors.checkCriticalThresholds();
-        myActuators.triggerAlert(isDanger);
-
-        // Local threshold crossed: one MQTT alert per danger episode (retried until published)
-        if (!isDanger) isAlertSent = false;
-        else if (!isAlertSent) isAlertSent = myMqtt.publishAlert("local_threshold");
-
-        myDisplay.showDashboard(mySensors, myActuators.isAlertActive, isWifiConnected);
+        myDisplay.showDashboard(mySensors, myActuators.isAlertActive, myWifi.isConnected());
     }
 
     // 2. Publish telemetry over MQTT (Every 200 ms; temp/hum only right after a DHT22 read)
-    if (isWifiConnected && (currentTime - lastTelemetryTime >= TELEMETRY_INTERVAL_MS)) {
+    if (myWifi.isConnected() && (currentTime - lastTelemetryTime >= TELEMETRY_INTERVAL_MS)) {
         lastTelemetryTime = currentTime;
         mySensors.readFast();
         if (myMqtt.publishTelemetry(mySensors, hasFreshClimate, currentTime < MQ2_WARMUP_MS)) {

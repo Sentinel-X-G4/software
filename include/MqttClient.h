@@ -10,6 +10,10 @@
 #include "Sensors.h"
 #include "MqttCa.h" // Generated at build time from secrets/ca.crt (scripts/embed_ca.py)
 
+// Command handler: returns nullptr if applied, otherwise the reason of the refusal; fills `state`
+// with the current outputs, sent back in the ack
+using CommandHandler = std::function<const char *(JsonObjectConst command, JsonObject state)>;
+
 // MQTTS client for the Sentinel-X broker.
 // Topics and payloads: backend-iot-alerts/detection-service/docs/MQTT_CONTRACT.md
 // Rights (account sentinel_iot): infrastructure/mosquitto/config/acl
@@ -22,11 +26,10 @@ private:
     bool buffersSized = false;
 
     String topicTelemetry;
-    String topicAlert;
     String topicCommand;
     String topicAck;
 
-    std::function<bool(const char *)> commandHandler;
+    CommandHandler commandHandler;
 
     static bool isTimeValid() {
         // TLS needs the real date to check the certificate validity period
@@ -45,8 +48,10 @@ private:
         return mktime(&t);
     }
 
-    // sentinelx/{DEVICE_ID}/cmd: {"command": "buzzer_on" | "buzzer_off" | "reset"}
-    // Answered on sentinelx/{DEVICE_ID}/ack: {"command": "...", "ok": true | false}
+    // sentinelx/{DEVICE_ID}/cmd (published by backend-api), commands in main.cpp handleCommand():
+    //   {"id": "...", "command": "alert" | "buzzer" | "led" | "screen" | "reset", "state": "...", "text": "..."}
+    // Answered on sentinelx/{DEVICE_ID}/ack, same id:
+    //   {"id": "...", "command": "...", "ok": true | false, "error": "...", "state": {"alert", "buzzer", "led", "screen"}}
     void onMessage(const char *topic, const uint8_t *payload, unsigned int length) {
         if (topicCommand != topic) return;
 
@@ -56,13 +61,17 @@ private:
             Serial.println("[MQTT] invalid command (JSON)");
             return;
         }
-        const char *name = command["command"] | "";
-        const bool ok = name[0] != '\0' && commandHandler && commandHandler(name);
-        Serial.printf("[MQTT] command \"%s\" ok=%d\n", name, ok);
-
         JsonDocument ack;
-        ack["command"] = name;
-        ack["ok"] = ok;
+        const char *id = command["id"] | "";
+        if (id[0] != '\0' && strlen(id) <= 64) ack["id"] = id;
+        ack["command"] = command["command"] | "";
+
+        const char *error = commandHandler
+                                ? commandHandler(command.as<JsonObjectConst>(), ack["state"].to<JsonObject>())
+                                : "no handler";
+        ack["ok"] = error == nullptr;
+        if (error) ack["error"] = error;
+        Serial.printf("[MQTT] command \"%s\" %s\n", ack["command"].as<const char *>(), error ? error : "ok");
         publishJson(topicAck, ack);
     }
 
@@ -108,10 +117,9 @@ public:
     }
 
     // Call once in setup(); the connection itself is made by loop() once Wi-Fi is up
-    void initialize(std::function<bool(const char *)> onCommand) {
+    void initialize(CommandHandler onCommand) {
         commandHandler = std::move(onCommand);
         topicTelemetry = String("sentinelx/") + DEVICE_ID + "/telemetry";
-        topicAlert = String("sentinelx/") + DEVICE_ID + "/alert";
         topicCommand = String("sentinelx/") + DEVICE_ID + "/cmd";
         topicAck = String("sentinelx/") + DEVICE_ID + "/ack";
 
@@ -164,13 +172,5 @@ public:
         doc["gas_do"] = sensors.gasAlarm ? 0 : 1; // Raw MQ-2 DO: 0 = threshold exceeded
         doc["warmup"] = isWarmup;
         return publishJson(topicTelemetry, doc);
-    }
-
-    // sentinelx/{DEVICE_ID}/alert: each message creates an alert on the dashboard
-    bool publishAlert(const char *type, bool value = true) {
-        JsonDocument doc;
-        doc["type"] = type;
-        doc["value"] = value;
-        return publishJson(topicAlert, doc);
     }
 };
