@@ -169,7 +169,6 @@ public:
         else doc["hum"] = nullptr;
         doc["pir"] = sensors.motionDetected ? 1 : 0;
         doc["gas_raw"] = constrain(sensors.gasLevel, 0, 1023);
-        doc["gas_do"] = sensors.gasAlarm ? 0 : 1; // Raw MQ-2 DO: 0 = threshold exceeded
         doc["warmup"] = isWarmup;
         return publishJson(topicTelemetry, doc);
     }

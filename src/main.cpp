@@ -116,7 +116,7 @@ void loop() {
     // 2. Publish telemetry over MQTT (Every 200 ms; temp/hum only right after a DHT22 read)
     if (myWifi.isConnected() && (currentTime - lastTelemetryTime >= TELEMETRY_INTERVAL_MS)) {
         lastTelemetryTime = currentTime;
-        mySensors.readFast();
+        mySensors.readMotion();
         if (myMqtt.publishTelemetry(mySensors, hasFreshClimate, currentTime < MQ2_WARMUP_MS)) {
             hasFreshClimate = false;
         }
