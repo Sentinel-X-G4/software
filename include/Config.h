@@ -5,7 +5,9 @@
 constexpr int PIN_DHT22 = D5;
 constexpr int PIN_PIR = D6;
 constexpr int PIN_MQ2_AO = A0;
-constexpr int PIN_BUZZER = D4;
+constexpr int PIN_BUZZER = D7; // Passive buzzer module (signal pin), driven with tone()
+// true if the module switches on with a LOW input (PNP transistor, "low level trigger")
+constexpr bool BUZZER_ACTIVE_LOW = false;
 constexpr int PIN_LED_R = D8;
 constexpr int PIN_LED_V = D3;
 

@@ -101,6 +101,7 @@ void setup() {
 
 void loop() {
     myWifi.loop();
+    myActuators.loop(); // Buzzer melody
     unsigned long currentTime = millis();
 
     // 1. Read sensors & update display (Every 2 seconds)
