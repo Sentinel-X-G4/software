@@ -5,6 +5,7 @@
 #include <WiFiClientSecure.h>
 #include <PubSubClient.h>
 #include <time.h>
+#include <functional>
 #include "Config.h"
 #include "Sensors.h"
 #include "MqttCa.h" // Generated at build time from secrets/ca.crt (scripts/embed_ca.py)
@@ -22,10 +23,47 @@ private:
 
     String topicTelemetry;
     String topicAlert;
+    String topicCommand;
+    String topicAck;
+
+    std::function<bool(const char *)> commandHandler;
 
     static bool isTimeValid() {
         // TLS needs the real date to check the certificate validity period
         return time(nullptr) > 1700000000;
+    }
+
+    // Firmware build date (UTC assumed), used when NTP is unreachable
+    static time_t buildTime() {
+        static const char months[] = "JanFebMarAprMayJunJulAugSepOctNovDec";
+        char month[4] = "";
+        tm t = {};
+        sscanf(__DATE__, "%3s %d %d", month, &t.tm_mday, &t.tm_year);
+        sscanf(__TIME__, "%d:%d:%d", &t.tm_hour, &t.tm_min, &t.tm_sec);
+        t.tm_mon = static_cast<int>((strstr(months, month) - months) / 3);
+        t.tm_year -= 1900;
+        return mktime(&t);
+    }
+
+    // sentinelx/{DEVICE_ID}/cmd: {"command": "buzzer_on" | "buzzer_off" | "reset"}
+    // Answered on sentinelx/{DEVICE_ID}/ack: {"command": "...", "ok": true | false}
+    void onMessage(const char *topic, const uint8_t *payload, unsigned int length) {
+        if (topicCommand != topic) return;
+
+        // The document copies the strings: payload (PubSubClient buffer) is reused by the ack publish
+        JsonDocument command;
+        if (deserializeJson(command, payload, length)) {
+            Serial.println("[MQTT] invalid command (JSON)");
+            return;
+        }
+        const char *name = command["command"] | "";
+        const bool ok = name[0] != '\0' && commandHandler && commandHandler(name);
+        Serial.printf("[MQTT] command \"%s\" ok=%d\n", name, ok);
+
+        JsonDocument ack;
+        ack["command"] = name;
+        ack["ok"] = ok;
+        publishJson(topicAck, ack);
     }
 
     bool publishJson(const String &topic, JsonDocument &doc) {
@@ -48,16 +86,20 @@ private:
             buffersSized = true;
         }
 
-        tls.setX509Time(time(nullptr));
+        tls.setX509Time(isTimeValid() ? time(nullptr) : buildTime());
         if (mqtt.connect(DEVICE_ID, MQTT_USERNAME, MQTT_PASSWORD)) {
-            Serial.println("[MQTT] connected");
+            // QoS 1: a command sent while the broker is reachable is not lost on the last hop
+            const bool subscribed = mqtt.subscribe(topicCommand.c_str(), 1);
+            Serial.printf("[MQTT] connected, cmd subscription=%d\n", subscribed);
             return true;
         }
 
         char tlsError[64] = "";
-        tls.getLastSSLError(tlsError, sizeof(tlsError));
-        // state -2: network / TLS (see tlsError), 4: bad credentials, 5: not authorized
-        Serial.printf("[MQTT] connection failed, state=%d tls=\"%s\"\n", mqtt.state(), tlsError);
+        const int tlsCode = tls.getLastSSLError(tlsError, sizeof(tlsError));
+        // state -2: network / TLS (see tlsError), 4: bad credentials, 5: not authorized.
+        // "Unknown error code" = no TLS handshake: TCP connection to MQTT_HOST:MQTT_PORT refused or unreachable
+        Serial.printf("[MQTT] connection failed to %s:%u, state=%d tls=%d \"%s\"\n", MQTT_HOST, MQTT_PORT,
+                      mqtt.state(), tlsCode, tlsError);
         return false;
     }
 
@@ -65,10 +107,13 @@ public:
     MqttClient() : caCert(MQTT_CA_CERT), mqtt(tls) {
     }
 
-    // Call once, after Wi-Fi is up
-    void initialize() {
+    // Call once in setup(); the connection itself is made by loop() once Wi-Fi is up
+    void initialize(std::function<bool(const char *)> onCommand) {
+        commandHandler = std::move(onCommand);
         topicTelemetry = String("sentinelx/") + DEVICE_ID + "/telemetry";
         topicAlert = String("sentinelx/") + DEVICE_ID + "/alert";
+        topicCommand = String("sentinelx/") + DEVICE_ID + "/cmd";
+        topicAck = String("sentinelx/") + DEVICE_ID + "/ack";
 
         configTime(0, 0, "pool.ntp.org", "time.google.com");
         tls.setTrustAnchors(&caCert);
@@ -79,6 +124,9 @@ public:
         if (ip.fromString(MQTT_HOST)) mqtt.setServer(ip, MQTT_PORT);
         else mqtt.setServer(MQTT_HOST, MQTT_PORT);
         mqtt.setBufferSize(MQTT_PAYLOAD_MAX + 64);
+        mqtt.setCallback([this](char *topic, uint8_t *payload, unsigned int length) {
+            onMessage(topic, payload, length);
+        });
     }
 
     // Call on every loop(): keeps the connection alive and reconnects without blocking for long
@@ -89,7 +137,7 @@ public:
             const unsigned long now = millis();
             if (lastAttemptTime != 0 && now - lastAttemptTime < MQTT_RECONNECT_INTERVAL_MS) return;
             lastAttemptTime = now;
-            if (!isTimeValid()) {
+            if (!isTimeValid() && now < NTP_TIMEOUT_MS) {
                 Serial.println("[MQTT] waiting for NTP time");
                 return;
             }

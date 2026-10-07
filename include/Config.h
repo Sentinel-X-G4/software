@@ -16,7 +16,10 @@ constexpr uint8_t OLED_ADDRESS = 0x3C;
 // --- TIMING (ms) ---
 constexpr unsigned long READ_INTERVAL_MS = 2000;
 constexpr unsigned long TELEMETRY_INTERVAL_MS = 200; // ~5 msg/s required by the detection service
+constexpr unsigned long WIFI_RETRY_INTERVAL_MS = 20000; // Time given to each Wi-Fi attempt before retrying
 constexpr unsigned long MQTT_RECONNECT_INTERVAL_MS = 5000;
+// No NTP after this delay (network without Internet): TLS checks the certificate dates against the build date
+constexpr unsigned long NTP_TIMEOUT_MS = 30000;
 constexpr unsigned long MQ2_WARMUP_MS = 180000;
 constexpr unsigned long PIR_WARMUP_MS = 60000;
 
@@ -27,14 +30,13 @@ constexpr int THRESHOLD_GAS_MAX = 400;
 constexpr int THRESHOLD_GAS_MIN = 40;
 
 // --- NETWORK & SERVER ---
-static const char *WIFI_SSID = "YOUR_SSID";
-static const char *WIFI_PASSWORD = "YOUR_PASSWORD";
-
-static const char *SERVER_HOST = "10.58.179.121";
-constexpr int WEBSOCKET_PORT = 8080;
+static const char *WIFI_SSID = "Vicky";
+static const char *WIFI_PASSWORD = "11111111";
 
 // MQTTS broker (TLS checked against secrets/ca.crt, see scripts/embed_ca.py)
-static const char *MQTT_HOST = "10.58.179.121";
+// IP of the machine running the stack: port 8883 is only published on BIND_IP (main/.env),
+// so BIND_IP must be this same IP (192.168.40.1 on the production server)
+static const char *MQTT_HOST = "172.20.10.2";
 constexpr uint16_t MQTT_PORT = 8883;
 static const char *MQTT_USERNAME = "sentinel_iot";
 static const char *MQTT_PASSWORD = "dev-pass-123"; // MQTT_ESP_PASSWORD in main/.env
