@@ -30,14 +30,14 @@ constexpr int THRESHOLD_GAS_MIN = 40;
 static const char *WIFI_SSID = "YOUR_SSID";
 static const char *WIFI_PASSWORD = "YOUR_PASSWORD";
 
-static const char *SERVER_HOST = "192.168.1.100";
+static const char *SERVER_HOST = "10.58.179.121";
 constexpr int WEBSOCKET_PORT = 8080;
 
 // MQTTS broker (TLS checked against secrets/ca.crt, see scripts/embed_ca.py)
-static const char *MQTT_HOST = "192.168.40.1";
+static const char *MQTT_HOST = "10.58.179.121";
 constexpr uint16_t MQTT_PORT = 8883;
 static const char *MQTT_USERNAME = "sentinel_iot";
-static const char *MQTT_PASSWORD = "YOUR_MQTT_PASSWORD"; // MQTT_ESP_PASSWORD in main/.env
+static const char *MQTT_PASSWORD = "dev-pass-123"; // MQTT_ESP_PASSWORD in main/.env
 constexpr size_t MQTT_PAYLOAD_MAX = 256;
 
 // Must match the broker ACL: the sentinel_iot account can only publish on sentinelx/esp01/...
