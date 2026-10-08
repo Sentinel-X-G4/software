@@ -1,79 +1,86 @@
 #include <Arduino.h>
-#include <ArduinoJson.h>
-#include <ESP8266WiFi.h>
-#include <ESP8266HTTPClient.h>
-#include <WiFiClientSecure.h>
-#include <WebSocketsClient.h>
 
 // Import our custom modules
 #include "Config.h"
 #include "Actuators.h"
 #include "Sensors.h"
 #include "Display.h"
+#include "WifiClient.h"
+#include "MqttClient.h"
 
 // Instantiate our objects
 Actuators myActuators;
 Sensors mySensors;
 Display myDisplay;
-
-// Network variables
-WiFiClientSecure secureClient;
-WebSocketsClient webSocket;
-bool isWifiConnected = false;
+WifiClient myWifi;
+MqttClient myMqtt;
 
 // Timing variables
 unsigned long lastReadTime = 0;
-unsigned long lastSendTime = 0;
+unsigned long lastTelemetryTime = 0;
+bool hasFreshClimate = false;
 
-// --- Network Functions ---
+// --- Remote commands (sentinelx/{DEVICE_ID}/cmd, sent by backend-api) ---
+// The only way to raise an alert: no local threshold. Everything persists until "reset" or a reboot.
 
-void connectWiFi() {
-    myDisplay.showSimpleMessage("Wi-Fi", "Connecting...");
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+const char *const ALERT_STATES[] = {"off", "on"};
+const char *const BUZZER_MODES[] = {"auto", "on", "off"};                   // BuzzerMode order
+const char *const LED_MODES[] = {"auto", "red", "green", "both", "off"};    // LedMode order
+const char *const SCREEN_MODES[] = {"auto", "off", "message"};              // ScreenMode order
 
-    int attempts = 0;
-    while (WiFi.status() != WL_CONNECTED && attempts < 40) {
-        delay(500);
-        attempts++;
+// Index of `value` in `names`, -1 if absent
+template <size_t N>
+int findMode(const char *const (&names)[N], const char *value) {
+    for (size_t i = 0; i < N; i++) {
+        if (strcmp(names[i], value) == 0) return static_cast<int>(i);
     }
-    isWifiConnected = (WiFi.status() == WL_CONNECTED);
+    return -1;
 }
 
-void sendDataHTTPS() {
-    JsonDocument doc;
-    doc["device_id"] = DEVICE_ID;
-    doc["temperature"] = mySensors.temperature;
-    doc["humidity"] = mySensors.humidity;
-    doc["gas_raw"] = mySensors.gasLevel;
-    doc["gas_alarm"] = mySensors.gasAlarm;
-    doc["motion"] = mySensors.motionDetected;
+const char *handleCommand(JsonObjectConst command, JsonObject state) {
+    const char *name = command["command"] | "";
+    const char *value = command["state"] | "";
+    const char *error = nullptr;
 
-    String jsonPayload;
-    serializeJson(doc, jsonPayload);
-
-    HTTPClient http;
-    String url = String("https://") + SERVER_HOST + ":" + SERVER_PORT_HTTPS + ENDPOINT_ALERTS;
-
-    if (http.begin(secureClient, url)) {
-        http.addHeader("Content-Type", "application/json");
-        http.POST(jsonPayload);
-        http.end();
+    if (strcmp(name, "alert") == 0) {
+        const int active = findMode(ALERT_STATES, value);
+        if (active < 0) error = "state: on | off";
+        else {
+            myActuators.setAlert(active == 1);
+            lastReadTime = 0; // ALERT line redrawn on the next loop()
+        }
+    } else if (strcmp(name, "buzzer") == 0) {
+        const int mode = findMode(BUZZER_MODES, value);
+        if (mode < 0) error = "state: auto | on | off";
+        else myActuators.setBuzzer(static_cast<BuzzerMode>(mode));
+    } else if (strcmp(name, "led") == 0) {
+        const int mode = findMode(LED_MODES, value);
+        if (mode < 0) error = "state: auto | red | green | both | off";
+        else myActuators.setLed(static_cast<LedMode>(mode));
+    } else if (strcmp(name, "screen") == 0) {
+        const char *text = command["text"] | "";
+        switch (findMode(SCREEN_MODES, value)) {
+            case 0: myDisplay.setAuto(); lastReadTime = 0; break; // Dashboard redrawn on the next loop()
+            case 1: myDisplay.turnOff(); break;
+            case 2:
+                if (text[0] == '\0') error = "text required";
+                else myDisplay.showMessage(text);
+                break;
+            default: error = "state: auto | off | message";
+        }
+    } else if (strcmp(name, "reset") == 0) {
+        myActuators.reset();
+        myDisplay.setAuto();
+        lastReadTime = 0;
+    } else {
+        error = "command: alert | buzzer | led | screen | reset";
     }
-}
 
-void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
-    if (type == WStype_TEXT) {
-        String message = String((char *) payload);
-        JsonDocument commandDoc;
-        deserializeJson(commandDoc, message);
-
-        const char *action = commandDoc["command"];
-
-        if (strcmp(action, "buzzer_on") == 0) digitalWrite(PIN_BUZZER, HIGH);
-        else if (strcmp(action, "buzzer_off") == 0) digitalWrite(PIN_BUZZER, LOW);
-        else if (strcmp(action, "reset") == 0) myActuators.triggerAlert(false);
-    }
+    state["alert"] = ALERT_STATES[myActuators.isAlertActive ? 1 : 0];
+    state["buzzer"] = BUZZER_MODES[static_cast<int>(myActuators.buzzerMode)];
+    state["led"] = LED_MODES[static_cast<int>(myActuators.ledMode)];
+    state["screen"] = SCREEN_MODES[static_cast<int>(myDisplay.mode)];
+    return error;
 }
 
 // --- Main Program ---
@@ -87,17 +94,14 @@ void setup() {
 
     myDisplay.showSimpleMessage("SENTINEL-X", "Booting...");
 
-    connectWiFi();
-    secureClient.setFingerprint(TLS_FINGERPRINT);
-
-    if (isWifiConnected) {
-        webSocket.begin(SERVER_HOST, WEBSOCKET_PORT, "/ws");
-        webSocket.onEvent(webSocketEvent);
-        webSocket.setReconnectInterval(5000);
-    }
+    myDisplay.showSimpleMessage("Wi-Fi", "Connecting...");
+    myWifi.initialize();
+    myMqtt.initialize(handleCommand);
 }
 
 void loop() {
+    myWifi.loop();
+    myActuators.loop(); // Buzzer melody
     unsigned long currentTime = millis();
 
     // 1. Read sensors & update display (Every 2 seconds)
@@ -105,21 +109,20 @@ void loop() {
         lastReadTime = currentTime;
 
         mySensors.readAll();
+        hasFreshClimate = true;
 
-        bool isDanger = mySensors.checkCriticalThresholds();
-        myActuators.triggerAlert(isDanger);
-
-        myDisplay.showDashboard(mySensors, myActuators.isAlertActive, isWifiConnected);
+        myDisplay.showDashboard(mySensors, myActuators.isAlertActive, myWifi.isConnected());
     }
 
-    // 2. Send data to server (Every 5 seconds)
-    if (isWifiConnected && (currentTime - lastSendTime >= SEND_INTERVAL_MS)) {
-        lastSendTime = currentTime;
-        sendDataHTTPS();
+    // 2. Publish telemetry over MQTT (Every 200 ms; temp/hum only right after a DHT22 read)
+    if (myWifi.isConnected() && (currentTime - lastTelemetryTime >= TELEMETRY_INTERVAL_MS)) {
+        lastTelemetryTime = currentTime;
+        mySensors.readMotion();
+        if (myMqtt.publishTelemetry(mySensors, hasFreshClimate, currentTime < MQ2_WARMUP_MS)) {
+            hasFreshClimate = false;
+        }
     }
 
-    // 3. Process incoming WebSocket commands
-    if (isWifiConnected) {
-        webSocket.loop();
-    }
+    // 3. Keep MQTT alive (reconnects, incoming commands)
+    myMqtt.loop();
 }
