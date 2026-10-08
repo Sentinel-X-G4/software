@@ -30,7 +30,7 @@ private:
         if (frequency == NOTE_REST) {
             silenceBuzzer();
         } else {
-            tone(PIN_BUZZER, frequency << MELODY_OCTAVE_SHIFT);
+            tone(PIN_BUZZER, frequency);
             isNoteSounding = true;
         }
     }
