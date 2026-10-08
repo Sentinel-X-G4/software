@@ -1,5 +1,7 @@
 #pragma once
 #include <Arduino.h>
+// WIFI_SSID, WIFI_PASSWORD, MQTT_HOST, MQTT_PASSWORD: generated from main/.env (scripts/secrets.py)
+#include "Secrets.h"
 
 // --- PINS ---
 constexpr int PIN_DHT22 = D5;
@@ -25,16 +27,11 @@ constexpr unsigned long MQ2_WARMUP_MS = 180000;
 constexpr unsigned long PIR_WARMUP_MS = 60000;
 
 // --- NETWORK & SERVER ---
-static const char *WIFI_SSID = "Vicky";
-static const char *WIFI_PASSWORD = "11111111";
-
 // MQTTS broker (TLS checked against secrets/ca.crt, see scripts/embed_ca.py)
-// IP of the machine running the stack: port 8883 is only published on BIND_IP (main/.env),
-// so BIND_IP must be this same IP (192.168.40.1 on the production server)
-static const char *MQTT_HOST = "172.20.10.2";
+// MQTT_HOST (ESP_MQTT_HOST in main/.env) = IP of the machine running the stack: port 8883 is only
+// published on BIND_IP, so both must match (192.168.40.1 on the production server)
 constexpr uint16_t MQTT_PORT = 8883;
 static const char *MQTT_USERNAME = "sentinel_iot";
-static const char *MQTT_PASSWORD = "dev-pass-123"; // MQTT_ESP_PASSWORD in main/.env
 constexpr size_t MQTT_PAYLOAD_MAX = 256;
 
 // Must match the broker ACL: the sentinel_iot account can only publish on sentinelx/esp01/...

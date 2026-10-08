@@ -1,5 +1,6 @@
 .pio
 include/MqttCa.h
+include/Secrets.h
 .idea/
 .vscode/
 compile_commands.json
